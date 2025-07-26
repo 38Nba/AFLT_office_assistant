@@ -1,47 +1,89 @@
 from aiogram import Router
 from aiogram.filters import Command
-from aiogram.types import Message, FSInputFile
+from aiogram.types import Message, FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton
 
+from database.db import (
+    book_seat,
+    cancel_booking,
+    get_bookings_by_user,
+    get_seat_map
+)
 from services.image_map import generate_office_map
 from ai.gpt_assistant import ask_gpt
-from database.db import save_user  # ✅ импорт сохранения пользователя
 
 router = Router()
 
+@router.message(Command("book"))
+async def book(message: Message):
+    parts = message.text.strip().split()
 
-@router.message(Command("start"))
-async def cmd_start(message: Message):
-    # ✅ Сохраняем пользователя в БД
-    save_user(user_id=message.from_user.id, username=message.from_user.username)
+    if len(parts) < 3:
+        await message.answer("❗ Пожалуйста, укажи место и дату. Пример: /book A3 2025-07-30")
+        return
 
-    await message.answer(
-        "Привет! Я твой личный ассистент по бронированию мест в офисе 🧠\n"
-        "Я могу помочь с такими вещами как: \n"
-        "- Кто будет в офисе\n"
-        "- Какой день выбрать\n"
-        "- Вопросы по команде, встречам и т.д.\n"
-        "- Покажу схему мест\n"
-        "- Забронирую или отменю бронирование\n"
-        
-        "Вот актуальная схема мест:"
-    )
-    image_path = generate_office_map()
-    await message.answer_photo(FSInputFile(image_path))
+    seat = parts[1].upper()
+    date = parts[2]
 
+    response = book_seat(message.from_user.id, seat, date)
+    await message.reply(response)
+
+@router.message(Command("cancel"))
+async def cmd_cancel(message: Message):
+    args = message.text.replace("/cancel", "").strip().split()
+    if len(args) < 2:
+        await message.reply("Укажи место и дату, например: /cancel A1 2025-07-30")
+        return
+    seat, date = args[0], args[1]
+    response = cancel_booking(message.from_user.id, seat, date)
+    await message.reply(response)
+
+@router.message(Command("mybookings"))
+async def cmd_mybookings(message: Message):
+    result = get_bookings_by_user(message.from_user.id)
+    await message.reply(result)
+
+@router.message(Command("map"))
+async def cmd_map(message: Message):
+    img_path = generate_office_map()
+    await message.answer_photo(FSInputFile(img_path))
+
+@router.message(Command("ai"))
+async def cmd_ai(message: Message):
+    if not message.text:
+        await message.reply("Пожалуйста, отправь вопрос после команды, например:\n`/ai кто будет в офисе в пятницу?`")
+        return
+
+    user_question = message.text.replace("/ai", "", 1).strip()
+    if not user_question:
+        await message.reply("Напиши вопрос после команды, например:\n`/ai кто будет в офисе в пятницу?`")
+        return
+
+    response = ask_gpt(user_question, user_id=message.from_user.id)
+
+    if isinstance(response, dict) and response.get("type") == "image":
+        await message.answer_photo(FSInputFile(response["path"]))
+    else:
+        await message.reply(response)
 
 @router.message(Command("aihelp"))
 async def cmd_aihelp(message: Message):
     await message.answer(
-        "🧾 Возможности чат-бота:\n\n"
-        "📌 Команды:\n"
-        "/start — начать работу и показать схему офиса\n"
-        "/book A1 2025-08-01 — забронировать место\n"
-        "/cancel A1 2025-08-01 — отменить бронь\n"
-        "/mybookings — список ваших бронирований\n"
-        "/map — схема мест на сегодня\n"
-        "/ai [вопрос] — задать вопрос или получить помощь от ИИ\n"
-        "🤖 Я также понимаю обычные фразы, например:\n"
-        "— «забронируй место B2 завтра»\n"
-        "— «кто будет в офисе в пятницу»\n"
-        "— «покажи занятые места на 2025-08-12»"
+        "💡 Я умею помогать:"
+        "- Забронировать место: 'забронируй место A1 в пятницу'\n"
+        "- Отменить бронирование: 'отмени место A1 2025-08-01'\n"
+        "- Показать схему мест: 'покажи схему мест на понедельник'\n"
+        "- Узнать кто будет в офисе: 'кто будет в офисе в среду'\n\n"
+        "Форматы дат: 'в понедельник', 'завтра', '2025-08-01'\n"
+        "Место можно писать кириллицей или латиницей (А1 / A1 — это одно и то же)"
     )
+
+@router.message(Command("help"))
+async def cmd_help(message: Message):
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🧠 Возможности AI", callback_data="aihelp")],
+            [InlineKeyboardButton(text="📍 Схема мест", callback_data="map")],
+            [InlineKeyboardButton(text="📅 Мои бронирования", callback_data="mybookings")],
+        ]
+    )
+    await message.answer("Выбери, с чем тебе помочь:", reply_markup=kb)
